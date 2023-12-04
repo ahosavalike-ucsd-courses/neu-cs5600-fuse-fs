@@ -1,0 +1,96 @@
+{
+    "version": "2.0.0",
+    "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "showReuseMessage": true
+    },
+    "tasks": [
+        {
+            "label": "Run Lab3",
+            "dependsOn": [
+                "Clean",
+                "Build",
+                "Run",
+                "Explore"
+            ],
+            "dependsOrder": "sequence",
+            // Mark as the default build task so cmd/ctrl+shift+b will create them
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+        },
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "pkill lab3-fuse; make clean; fusermount -u temp; rm -rf tmp",
+            "options": {
+                "shell": {
+                    "executable": "bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "isBackground": false,
+            "problemMatcher": [],
+        },
+        {
+            "label": "Build",
+            "dependsOn": ["Clean"],
+            "type": "shell",
+            "command": "make",
+            "options": {
+                "shell": {
+                    "executable": "bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "isBackground": false,
+            "problemMatcher": [],
+        },
+        {
+            "label": "Run",
+            "dependsOn": ["Build"],
+            "type": "shell",
+            "command": "mkdir -p tmp && ./lab3-fuse -s -d -image disk1.img tmp",
+            "options": {
+                "shell": {
+                    "executable": "bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": {
+                "pattern": {
+                    "regexp": ""
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "FUSE library version",
+                    "endsPattern": ".",
+                },
+            },
+            "presentation": {
+                "group": "run"
+            }
+        },
+        {
+            "label": "Explore",
+            "type": "shell",
+            "command": "cd tmp && bash -l",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "group": "run"
+            }
+        },
+    ]
+}

@@ -5,8 +5,14 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "ms-vscode.cpptools-extension-pack",
         "tomoki1207.pdf"
       ]
     }
-  }
+  },
+  "mounts": [
+    "source=/lib/modules,target=/lib/modules,type=bind"
+  ],
+  "privileged": true,
+  "postStartCommand": "modprobe fuse"
 }
