@@ -20,8 +20,9 @@
 #include <assert.h>
 
 #include "fs5600.h"
+#include "homework.h"
 
-/* disk access. All access is in terms of 4KB blocks; read and
+/* disk access. All access is in terms of BLOCK_SIZE blocks; read and
  * write functions return 0 (success) or -EIO.
  */
 extern int block_read(void *buf, int blknum, int nblks);
@@ -67,9 +68,42 @@ void inode_2_stat(struct stat *sb, struct fs_inode *in)
     sb->st_atime = sb->st_mtime = sb->st_ctime = in->mtime;
 }
 
+void read_state(fs_state *state) {
+    int block = 0;
+    block_read(&state->super, block, 1);
+    block++;
+    state->block_bm = calloc(state->super.blk_map_len, BLOCK_SIZE);
+    block_read(state->block_bm, block, state->super.blk_map_len);
+    block += state->super.blk_map_len;
+    state->inode_bm = calloc(state->super.in_map_len, BLOCK_SIZE);
+    block_read(state->inode_bm, block, state->super.in_map_len);
+    block += state->super.in_map_len;
+    state->inodes = calloc(state->super.inodes_len, sizeof(fs_inode));
+    for (int i = 0; i < state->super.inodes_len; i++) {
+        block_read(&state->inodes[i], block, INODE_BLKS);
+        block += INODE_BLKS;
+    }
+}
+
+void write_state(fs_state *state) {
+    int block = 0;
+    block_write(&state->super, block, 1);
+    block++;
+    block_write(state->block_bm, block, state->super.blk_map_len);
+    block += state->super.blk_map_len;
+    block_write(state->inode_bm, block, state->super.in_map_len);
+    block += state->super.in_map_len;
+    for (int i = 0; i < state->super.inodes_len; i++) {
+        block_write(&state->inodes[i], block, INODE_BLKS);
+        block += INODE_BLKS;
+    }
+}
+
 void* lab3_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
-    return NULL;
+    fs_state *state = calloc(1, sizeof(fs_state));
+    read_state(state);
+    return state;
 }
 
 /* for read-only version you need to implement:

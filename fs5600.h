@@ -22,7 +22,7 @@ struct fs_dirent {
 /* Superblock - holds file system parameters. 
  * All lengths are in blocks; root directory is inode 1
  */
-struct fs_super {
+typedef struct fs_super {
     int32_t magic;             /* 0x37363030 ('5600') */
     int32_t disk_size;
     int32_t blk_map_len;
@@ -31,10 +31,10 @@ struct fs_super {
 
     /* pad out to an entire block */
     char pad[1004];
-};
+} fs_super;
 
 #define N_DIRECT 6
-struct fs_inode {
+typedef struct fs_inode {
     int16_t uid;      /* file owner */
     int16_t gid;      /* group */
     int32_t mode;     /* type + permissions */
@@ -44,6 +44,6 @@ struct fs_inode {
     int32_t indir_1;  /* block holding next 256 blocks */
     int32_t indir_2;  /* double indirect block */
     int32_t pad[4];   /* to make it 64 bytes */
-};
+} fs_inode;
 
 #endif
