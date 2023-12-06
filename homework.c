@@ -9,18 +9,20 @@
 #define FUSE_USE_VERSION 30
 #define _FILE_OFFSET_BITS 64
 
-#include <stdlib.h>
-#include <stddef.h>
-#include <unistd.h>
-#include <fuse3/fuse.h>
-#include <fcntl.h>
-#include <string.h>
-#include <stdio.h>
-#include <errno.h>
+#include "homework.h"
+
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <fuse3/fuse.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "fs5600.h"
-#include "homework.h"
 
 /* disk access. All access is in terms of BLOCK_SIZE blocks; read and
  * write functions return 0 (success) or -EIO.
@@ -28,7 +30,7 @@
 extern int block_read(void *buf, int blknum, int nblks);
 extern int block_write(void *buf, int blknum, int nblks);
 
-/* how many buckets of size M do you need to hold N items? 
+/* how many buckets of size M do you need to hold N items?
  */
 int div_round_up(int n, int m) {
     return (n + m - 1) / m;
@@ -37,14 +39,13 @@ int div_round_up(int n, int m) {
 /* quick and dirty function to split an absolute path (i.e. begins with "/")
  * uses the same interface as the command line parser in Lab 1
  */
-int split_path(const char *path, int argc_max, char **argv, char *buf, int buf_len)
-{
+int split_path(const char *path, int argc_max, char **argv, char *buf, int buf_len) {
     int i = 0, c = 1;
     char *end = buf + buf_len;
 
     if (*path++ != '/' || *path == 0)
         return 0;
-        
+
     while (c != 0 && i < argc_max && buf < end) {
         argv[i++] = buf;
         while ((c = *path++) && (c != '/') && buf < end)
@@ -54,10 +55,9 @@ int split_path(const char *path, int argc_max, char **argv, char *buf, int buf_l
     return i;
 }
 
-/* I'll give you this function for free, to help 
+/* I'll give you this function for free, to help
  */
-void inode_2_stat(struct stat *sb, struct fs_inode *in)
-{
+void inode_2_stat(struct stat *sb, struct fs_inode *in) {
     memset(sb, 0, sizeof(*sb));
     sb->st_mode = in->mode;
     sb->st_nlink = 1;
@@ -99,8 +99,7 @@ void write_state(fs_state *state) {
     }
 }
 
-void* lab3_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
-{
+void *lab3_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
     fs_state *state = calloc(1, sizeof(fs_state));
     read_state(state);
     return state;
@@ -128,17 +127,16 @@ void* lab3_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
  */
 struct fuse_operations fs_ops = {
     .init = lab3_init,
-//    .getattr = lab3_getattr,
-//    .readdir = lab3_readdir,
-//    .read = lab3_read,
+    // .getattr = lab3_getattr,
+    //    .readdir = lab3_readdir,
+    //    .read = lab3_read,
 
-//    .create = lab3_create,
-//    .mkdir = lab3_mkdir,
-//    .unlink = lab3_unlink,
-//    .rmdir = lab3_rmdir,
-//    .rename = lab3_rename,
-//    .chmod = lab3_chmod,
-//    .truncate = lab3_truncate,
-//    .write = lab3_write,
+    //    .create = lab3_create,
+    //    .mkdir = lab3_mkdir,
+    //    .unlink = lab3_unlink,
+    //    .rmdir = lab3_rmdir,
+    //    .rename = lab3_rename,
+    //    .chmod = lab3_chmod,
+    //    .truncate = lab3_truncate,
+    //    .write = lab3_write,
 };
-

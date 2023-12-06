@@ -7,7 +7,7 @@
 #include <stdio.h>
 #define dbg(...) printf(__VA_ARGS__);
 #else
-#define dbg(...) {}
+#define dbg(...)
 #endif
 
 typedef struct fs_state {
