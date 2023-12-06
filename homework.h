@@ -5,7 +5,7 @@
 
 #ifdef __HOMEWORK__
 #include <stdio.h>
-#define dbg(...) printf(__VA_ARGS__);
+#define dbg(...) fprintf(stderr, __VA_ARGS__);
 #else
 #define dbg(...)
 #endif

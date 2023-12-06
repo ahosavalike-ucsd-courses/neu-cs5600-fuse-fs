@@ -113,7 +113,7 @@ void lab3_destroy(void *private_data) {
     free(state);
 }
 
-fs_dirent find_dirent(fs_state *state, fs_inode *inode, char *name) {
+fs_dirent find_next_dirent(fs_state *state, fs_inode *inode, char *name) {
     assert(inode->mode & 0x4000 != 0);
     fs_dirent dirents[BLOCK_SIZE / sizeof(fs_dirent)] = {0};
     // Go through direct blocks
@@ -166,9 +166,8 @@ fs_dirent find_dirent(fs_state *state, fs_inode *inode, char *name) {
     return dirents[0];
 }
 
-int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
-    fs_state *state = fuse_get_context()->private_data;
-    // TODO: Check if this is always correct
+fs_inode *find_inode(fs_state *state, char *path) {
+    // Root inode at index 1
     fs_inode *inode = &state->inodes[1];
     char token[28] = {0};
     // For each directory, skip /
@@ -185,13 +184,69 @@ int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
         // Parse the inode's (dir?)entries and search for the current dir/file
         // Test for inode being a directory entry
         if (!last && inode->mode & 0x4000 == 0) return -ENOTDIR;
-        fs_dirent next = find_dirent(state, inode, token);
+        fs_dirent next = find_next_dirent(state, inode, token);
         if (!next.valid) return -ENOENT;
         // Inode number cannot be 0
         assert(next.inode);
         inode = &state->inodes[next.inode];
     }
+    return inode;
+}
+
+int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
+    fs_state *state = fuse_get_context()->private_data;
+    fs_inode *inode = find_inode(state, path);
     inode_2_stat(sb, inode);
+    return 0;
+}
+
+int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
+    fs_state *state = fuse_get_context()->private_data;
+    fs_inode *inode = find_inode(state, path);
+    if (inode->mode & 0x4000 == 0) return -ENOTDIR;
+
+    // Copy of logic from find_next_dirent
+    fs_dirent dirents[BLOCK_SIZE / sizeof(fs_dirent)] = {0};
+    // Go through direct blocks
+    for (int i = 0; i < N_DIRECT; i++) {
+        int32_t blk = inode->ptrs[i];
+        // Cannot have block 0
+        if (!blk) break;
+        assert(block_read(dirents, blk, 1) == 0);
+        for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
+            if (!dirents[i].valid) continue;
+            filler(ptr, dirents[i].name, NULL, 0, 0);
+        }
+    }
+    // Go through indir_1 block
+    int32_t block_nums[BLOCK_SIZE / sizeof(int32_t)] = {0};
+    assert(block_read(block_nums, inode->indir_1, 1) == 0);
+    for (int j = 0; j < BLOCK_SIZE / sizeof(int32_t); j++) {
+        // Cannot have block 0
+        assert(block_nums[j]);
+        assert(block_read(dirents, block_nums[j], 1) == 0);
+        for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
+            if (!dirents[i].valid) continue;
+            filler(ptr, dirents[i].name, NULL, 0, 0);
+        }
+    }
+    // Go through indir_2 block
+    int32_t double_block_nums[BLOCK_SIZE / sizeof(int32_t)] = {0};
+    assert(block_read(double_block_nums, inode->indir_2, 1) == 0);
+    for (int k = 0; k < BLOCK_SIZE / sizeof(int32_t); k++) {
+        // Cannot have block 0
+        assert(double_block_nums[k]);
+        assert(block_read(block_nums, double_block_nums[k], 1) == 0);
+        for (int j = 0; j < BLOCK_SIZE / sizeof(int32_t); j++) {
+            // Cannot have block 0
+            assert(block_nums[j]);
+            assert(block_read(dirents, block_nums[j], 1) == 0);
+            for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
+                if (!dirents[i].valid) continue;
+                filler(ptr, dirents[i].name, NULL, 0, 0);
+            }
+        }
+    }
     return 0;
 }
 
@@ -219,8 +274,8 @@ struct fuse_operations fs_ops = {
     .init = lab3_init,
     .destroy = lab3_destroy,
     .getattr = lab3_getattr,
-    //    .readdir = lab3_readdir,
-    //    .read = lab3_read,
+    .readdir = lab3_readdir,
+    // .read = lab3_read,
 
     //    .create = lab3_create,
     //    .mkdir = lab3_mkdir,
