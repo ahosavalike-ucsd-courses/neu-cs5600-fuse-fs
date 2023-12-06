@@ -78,11 +78,8 @@ void read_state(fs_state *state) {
     state->inode_bm = calloc(state->super.in_map_len, BLOCK_SIZE);
     block_read(state->inode_bm, block, state->super.in_map_len);
     block += state->super.in_map_len;
-    state->inodes = calloc(state->super.inodes_len, sizeof(fs_inode));
-    for (int i = 0; i < state->super.inodes_len; i++) {
-        block_read(&state->inodes[i], block, INODE_BLKS);
-        block += INODE_BLKS;
-    }
+    state->inodes = calloc(state->super.inodes_len, BLOCK_SIZE);
+    block_read(state->inodes, block, state->super.inodes_len);
 }
 
 void write_state(fs_state *state) {
@@ -93,10 +90,7 @@ void write_state(fs_state *state) {
     block += state->super.blk_map_len;
     block_write(state->inode_bm, block, state->super.in_map_len);
     block += state->super.in_map_len;
-    for (int i = 0; i < state->super.inodes_len; i++) {
-        block_write(&state->inodes[i], block, INODE_BLKS);
-        block += INODE_BLKS;
-    }
+    block_write(state->inodes, block, state->super.inodes_len);
 }
 
 void *lab3_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
@@ -113,138 +107,96 @@ void lab3_destroy(void *private_data) {
     free(state);
 }
 
+int32_t get_block_index_from_inode_index(fs_inode *inode, int32_t file_block_number) {
+    uint32_t size = inode->size / BLOCK_SIZE;
+    assert(file_block_number < size);
+    if (file_block_number < N_DIRECT) {
+        return inode->ptrs[file_block_number];
+    } else if (file_block_number < (N_DIRECT + N_BLOCKS_IN_BLOCK)) {
+        file_block_number -= N_DIRECT;
+        assert(inode->indir_1);
+        int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
+        assert(block_read(block_nums, inode->indir_1, 1) == 0);
+        return block_nums[file_block_number - N_DIRECT];
+    } else {
+        file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
+        assert(inode->indir_2);
+        int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
+        
+        assert(block_read(block_nums, inode->indir_2, 1) == 0);
+        int32_t block_num_id = block_nums[file_block_number / (N_BLOCKS_IN_BLOCK)];
+        assert(block_read(block_nums, block_num_id, 1) == 0);
+        return block_nums[file_block_number % (N_BLOCKS_IN_BLOCK)];
+    }
+}
+
 fs_dirent find_next_dirent(fs_state *state, fs_inode *inode, char *name) {
-    assert(inode->mode & 0x4000 != 0);
-    fs_dirent dirents[BLOCK_SIZE / sizeof(fs_dirent)] = {0};
-    // Go through direct blocks
-    for (int i = 0; i < N_DIRECT; i++) {
-        int32_t blk = inode->ptrs[i];
-        // Cannot have block 0
-        if (!blk) break;
-        assert(block_read(dirents, blk, 1) == 0);
-        for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
-            // Not found
-            if (!dirents[i].valid) continue;
-            // Name matches, found
-            if (!strcmp(name, dirents[i].name)) return dirents[i];
-        }
-    }
-    // Go through indir_1 block
-    int32_t block_nums[BLOCK_SIZE / sizeof(int32_t)] = {0};
-    assert(block_read(block_nums, inode->indir_1, 1) == 0);
-    for (int j = 0; j < BLOCK_SIZE / sizeof(int32_t); j++) {
-        // Cannot have block 0
-        assert(block_nums[j]);
-        assert(block_read(dirents, block_nums[j], 1) == 0);
-        for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
-            // Not found
-            if (!dirents[i].valid) continue;
-            // Name matches, found
-            if (!strcmp(name, dirents[i].name)) return dirents[i];
-        }
-    }
-    // Go through indir_2 block
-    int32_t double_block_nums[BLOCK_SIZE / sizeof(int32_t)] = {0};
-    assert(block_read(double_block_nums, inode->indir_2, 1) == 0);
-    for (int k = 0; k < BLOCK_SIZE / sizeof(int32_t); k++) {
-        // Cannot have block 0
-        assert(double_block_nums[k]);
-        assert(block_read(block_nums, double_block_nums[k], 1) == 0);
-        for (int j = 0; j < BLOCK_SIZE / sizeof(int32_t); j++) {
-            // Cannot have block 0
-            assert(block_nums[j]);
-            assert(block_read(dirents, block_nums[j], 1) == 0);
-            for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
-                // Not found
-                if (!dirents[i].valid) continue;
-                // Name matches, found
-                if (!strcmp(name, dirents[i].name)) return dirents[i];
-            }
+    assert(S_ISDIR(inode->mode));
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
+        assert(block_read(dirents, get_block_index_from_inode_index(inode, i), 1) == 0);
+        for(int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+            if (!dirents[j].valid) continue;
+            if (!strcmp(name, dirents[j].name)) return dirents[j];
         }
     }
     dirents[0].valid = 0;
     return dirents[0];
 }
 
-fs_inode *find_inode(fs_state *state, char *path) {
+int32_t find_inode(fs_state *state, const char *path) {
     // Root inode at index 1
-    fs_inode *inode = &state->inodes[1];
+    int32_t inode_idx = 1;
+    fs_inode *inode = &state->inodes[inode_idx];
     char token[28] = {0};
     // For each directory, skip /
+    dbg("Finding inode for %s\n", path);
     assert(*path == '/');
-    while (*++path) {
+    while (*path && *++path) {
         memset(token, 0, 28);
         int i = 0;
-        while (*path && *path != "/")
+        while (*path && *path != '/')
             token[i++] = *path++;
         // Break on 0 length token
-        if (*token) break;
-        // Check if this is the last token
-        bool last = !*path;
+        if (!*token) break;
+        dbg("Token: %s\n", token);
         // Parse the inode's (dir?)entries and search for the current dir/file
         // Test for inode being a directory entry
-        if (!last && inode->mode & 0x4000 == 0) return -ENOTDIR;
+        if (*path && !S_ISDIR(inode->mode)) return -ENOTDIR;
         fs_dirent next = find_next_dirent(state, inode, token);
         if (!next.valid) return -ENOENT;
+        inode_idx = next.inode;
         // Inode number cannot be 0
-        assert(next.inode);
-        inode = &state->inodes[next.inode];
+        assert(inode_idx);
+        inode = &state->inodes[inode_idx];
     }
-    return inode;
+    dbg("Found inode idx: %d\n", inode_idx);
+    return inode_idx;
 }
 
 int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
     fs_state *state = fuse_get_context()->private_data;
-    fs_inode *inode = find_inode(state, path);
+    int32_t inode_idx = find_inode(state, path);
+    assert(inode_idx);
+    if (inode_idx < 0) return inode_idx;
+    fs_inode *inode = &state->inodes[inode_idx];
     inode_2_stat(sb, inode);
     return 0;
 }
 
 int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
     fs_state *state = fuse_get_context()->private_data;
-    fs_inode *inode = find_inode(state, path);
-    if (inode->mode & 0x4000 == 0) return -ENOTDIR;
+    int32_t inode_idx = find_inode(state, path);
+    assert(inode_idx);
+    if (inode_idx < 0) return inode_idx;
+    fs_inode *inode = &state->inodes[inode_idx];
+    if (!S_ISDIR(inode->mode)) return -ENOTDIR;
 
-    // Copy of logic from find_next_dirent
-    fs_dirent dirents[BLOCK_SIZE / sizeof(fs_dirent)] = {0};
-    // Go through direct blocks
-    for (int i = 0; i < N_DIRECT; i++) {
-        int32_t blk = inode->ptrs[i];
-        // Cannot have block 0
-        if (!blk) break;
-        assert(block_read(dirents, blk, 1) == 0);
-        for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
-            if (!dirents[i].valid) continue;
-            filler(ptr, dirents[i].name, NULL, 0, 0);
-        }
-    }
-    // Go through indir_1 block
-    int32_t block_nums[BLOCK_SIZE / sizeof(int32_t)] = {0};
-    assert(block_read(block_nums, inode->indir_1, 1) == 0);
-    for (int j = 0; j < BLOCK_SIZE / sizeof(int32_t); j++) {
-        // Cannot have block 0
-        assert(block_nums[j]);
-        assert(block_read(dirents, block_nums[j], 1) == 0);
-        for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
-            if (!dirents[i].valid) continue;
-            filler(ptr, dirents[i].name, NULL, 0, 0);
-        }
-    }
-    // Go through indir_2 block
-    int32_t double_block_nums[BLOCK_SIZE / sizeof(int32_t)] = {0};
-    assert(block_read(double_block_nums, inode->indir_2, 1) == 0);
-    for (int k = 0; k < BLOCK_SIZE / sizeof(int32_t); k++) {
-        // Cannot have block 0
-        assert(double_block_nums[k]);
-        assert(block_read(block_nums, double_block_nums[k], 1) == 0);
-        for (int j = 0; j < BLOCK_SIZE / sizeof(int32_t); j++) {
-            // Cannot have block 0
-            assert(block_nums[j]);
-            assert(block_read(dirents, block_nums[j], 1) == 0);
-            for (int i = 0; i < BLOCK_SIZE / sizeof(fs_dirent); i++) {
-                if (!dirents[i].valid) continue;
-                filler(ptr, dirents[i].name, NULL, 0, 0);
-            }
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
+        assert(block_read(dirents, get_block_index_from_inode_index(inode, i), 1) == 0);
+        for(int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+            if(dirents[j].valid) filler(ptr, dirents[j].name, NULL, 0, 0);
         }
     }
     return 0;

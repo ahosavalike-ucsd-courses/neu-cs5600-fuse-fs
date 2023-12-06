@@ -10,13 +10,14 @@
 #define dbg(...)
 #endif
 
+#define N_BLOCKS_IN_BLOCK (BLOCK_SIZE / sizeof(int32_t))
+#define N_DIRENTS_IN_BLOCK (BLOCK_SIZE / sizeof(fs_dirent))
+
 typedef struct fs_state {
     fs_super super;
     char* block_bm;
     char* inode_bm;
     fs_inode* inodes;
 } fs_state;
-
-#define INODE_BLKS (sizeof(fs_inode) / BLOCK_SIZE)
 
 #endif
