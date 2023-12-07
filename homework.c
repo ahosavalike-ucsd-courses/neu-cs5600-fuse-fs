@@ -71,6 +71,7 @@ void inode_2_stat(struct stat *sb, struct fs_inode *in) {
 void read_state(fs_state *state) {
     int block = 0;
     block_read(&state->super, block, 1);
+    assert(state->super.magic == FS_MAGIC);
     block++;
     state->block_bm = calloc(state->super.blk_map_len, BLOCK_SIZE);
     block_read(state->block_bm, block, state->super.blk_map_len);
