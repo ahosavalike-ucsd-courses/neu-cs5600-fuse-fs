@@ -108,7 +108,7 @@ void lab3_destroy(void *private_data) {
 }
 
 int32_t get_block_index_from_inode_index(fs_inode *inode, int32_t file_block_number) {
-    uint32_t size = inode->size / BLOCK_SIZE;
+    uint32_t size = div_round_up(inode->size, BLOCK_SIZE);
     assert(file_block_number < size);
     if (file_block_number < N_DIRECT) {
         return inode->ptrs[file_block_number];
@@ -122,7 +122,7 @@ int32_t get_block_index_from_inode_index(fs_inode *inode, int32_t file_block_num
         file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
         assert(inode->indir_2);
         int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
-        
+
         assert(block_read(block_nums, inode->indir_2, 1) == 0);
         int32_t block_num_id = block_nums[file_block_number / (N_BLOCKS_IN_BLOCK)];
         assert(block_read(block_nums, block_num_id, 1) == 0);
@@ -135,7 +135,7 @@ fs_dirent find_next_dirent(fs_state *state, fs_inode *inode, char *name) {
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
         assert(block_read(dirents, get_block_index_from_inode_index(inode, i), 1) == 0);
-        for(int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+        for (int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
             if (!dirents[j].valid) continue;
             if (!strcmp(name, dirents[j].name)) return dirents[j];
         }
@@ -195,11 +195,63 @@ int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offs
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
         assert(block_read(dirents, get_block_index_from_inode_index(inode, i), 1) == 0);
-        for(int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
-            if(dirents[j].valid) filler(ptr, dirents[j].name, NULL, 0, 0);
+        for (int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+            if (dirents[j].valid) filler(ptr, dirents[j].name, NULL, 0, 0);
         }
     }
     return 0;
+}
+
+int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse_file_info *fi) {
+    fs_state *state = fuse_get_context()->private_data;
+    int32_t inode_idx = find_inode(state, path);
+    assert(inode_idx);
+    if (inode_idx < 0) return inode_idx;
+    fs_inode *inode = &state->inodes[inode_idx];
+    if (!S_ISREG(inode->mode)) return S_ISDIR(inode->mode) ? -EISDIR : -EINVAL;
+
+    int32_t block_offset = offset / BLOCK_SIZE;
+    int32_t bytes_to_read = min(len, inode->size - offset);
+    int32_t fill_index = 0;
+
+    // First block
+    int32_t bytes_to_copy_first_block = min(bytes_to_read, BLOCK_SIZE - (offset % BLOCK_SIZE));
+    bytes_to_read -= bytes_to_copy_first_block;
+
+    char *temp = calloc(BLOCK_SIZE, sizeof(char));
+    block_read(temp, get_block_index_from_inode_index(inode, block_offset), 1);
+    memcpy(buf + fill_index, temp + (offset % BLOCK_SIZE), bytes_to_copy_first_block);
+    fill_index += bytes_to_copy_first_block;
+
+    // Check if we are done
+    assert(bytes_to_read >= 0);
+    if (bytes_to_read == 0) {
+        free(temp);
+        return min(len, inode->size - offset);
+    }
+
+    // Not yet, iterate through whole blocks
+    int32_t last_block_needed = block_offset + div_round_up(bytes_to_read, BLOCK_SIZE);
+    for (int32_t block_num = block_offset + 1;
+         block_num < last_block_needed;
+         block_num++, fill_index += BLOCK_SIZE, bytes_to_read -= BLOCK_SIZE) {
+        block_read(buf + fill_index, get_block_index_from_inode_index(inode, block_num), 1);
+    }
+
+    // Check if we are done
+    assert(bytes_to_read >= 0);
+    if (bytes_to_read == 0) {
+        free(temp);
+        return min(len, inode->size - offset);
+    }
+
+    // Not yet, last block has some data
+    assert(bytes_to_read < BLOCK_SIZE);
+    block_read(temp, get_block_index_from_inode_index(inode, last_block_needed), 1);
+    memcpy(buf + fill_index, temp, bytes_to_read);
+
+    free(temp);
+    return min(len, inode->size - offset);
 }
 
 /* for read-only version you need to implement:
@@ -227,7 +279,7 @@ struct fuse_operations fs_ops = {
     .destroy = lab3_destroy,
     .getattr = lab3_getattr,
     .readdir = lab3_readdir,
-    // .read = lab3_read,
+    .read = lab3_read,
 
     //    .create = lab3_create,
     //    .mkdir = lab3_mkdir,

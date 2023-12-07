@@ -10,6 +10,8 @@
 #define dbg(...)
 #endif
 
+#define min(a,b) (((a) < (b)) ? (a) : (b))
+
 #define N_BLOCKS_IN_BLOCK (BLOCK_SIZE / sizeof(int32_t))
 #define N_DIRENTS_IN_BLOCK (BLOCK_SIZE / sizeof(fs_dirent))
 
