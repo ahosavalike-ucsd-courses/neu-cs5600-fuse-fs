@@ -107,27 +107,29 @@ void lab3_destroy(void *private_data) {
     free(state);
 }
 
-int32_t get_block_index_from_inode_index(fs_inode *inode, int32_t file_block_number) {
+int32_t get_block_idx_from_inode_idx(fs_inode *inode, int32_t file_block_number) {
     uint32_t size = div_round_up(inode->size, BLOCK_SIZE);
     assert(file_block_number < size);
     if (file_block_number < N_DIRECT) {
         return inode->ptrs[file_block_number];
-    } else if (file_block_number < (N_DIRECT + N_BLOCKS_IN_BLOCK)) {
-        file_block_number -= N_DIRECT;
-        assert(inode->indir_1);
-        int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
-        assert(block_read(block_nums, inode->indir_1, 1) == 0);
-        return block_nums[file_block_number - N_DIRECT];
-    } else {
-        file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
-        assert(inode->indir_2);
-        int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
-
-        assert(block_read(block_nums, inode->indir_2, 1) == 0);
-        int32_t block_num_id = block_nums[file_block_number / (N_BLOCKS_IN_BLOCK)];
-        assert(block_read(block_nums, block_num_id, 1) == 0);
-        return block_nums[file_block_number % (N_BLOCKS_IN_BLOCK)];
     }
+
+    file_block_number -= N_DIRECT;
+    if (file_block_number < N_BLOCKS_IN_BLOCK) {
+        assert(inode->indir_1);
+        int32_t block_ptrs[N_BLOCKS_IN_BLOCK] = {0};
+        assert(block_read(block_ptrs, inode->indir_1, 1) == 0);
+        return block_ptrs[file_block_number];
+    }
+
+    file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
+    assert(inode->indir_2);
+    int32_t block_ptrs[N_BLOCKS_IN_BLOCK] = {0};
+
+    assert(block_read(block_ptrs, inode->indir_2, 1) == 0);
+    int32_t block_num_id = block_ptrs[file_block_number / (N_BLOCKS_IN_BLOCK)];
+    assert(block_read(block_ptrs, block_num_id, 1) == 0);
+    return block_ptrs[file_block_number % (N_BLOCKS_IN_BLOCK)];
 }
 
 int32_t set_block_index_to_inode_index(fs_inode *inode, int32_t file_block_number, int32_t block_idx) {
@@ -157,7 +159,7 @@ fs_dirent find_valid_dirent_by_name(fs_state *state, fs_inode *inode, char *name
     assert(S_ISDIR(inode->mode));
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
-        assert(block_read(dirents, get_block_index_from_inode_index(inode, i), 1) == 0);
+        assert(block_read(dirents, get_block_idx_from_inode_idx(inode, i), 1) == 0);
         for (int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
             if (!dirents[j].valid) continue;
             if (!strcmp(name, dirents[j].name)) return dirents[j];
@@ -222,7 +224,7 @@ int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offs
 
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
-        assert(block_read(dirents, get_block_index_from_inode_index(inode, i), 1) == 0);
+        assert(block_read(dirents, get_block_idx_from_inode_idx(inode, i), 1) == 0);
         for (int j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
             if (dirents[j].valid) filler(ptr, dirents[j].name, NULL, 0, 0);
         }
@@ -247,7 +249,7 @@ int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse
     bytes_to_read -= bytes_to_copy_first_block;
 
     char *temp = calloc(BLOCK_SIZE, sizeof(char));
-    block_read(temp, get_block_index_from_inode_index(inode, block_offset), 1);
+    block_read(temp, get_block_idx_from_inode_idx(inode, block_offset), 1);
     memcpy(buf + fill_index, temp + (offset % BLOCK_SIZE), bytes_to_copy_first_block);
     fill_index += bytes_to_copy_first_block;
 
@@ -263,7 +265,7 @@ int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse
     for (int32_t block_num = block_offset + 1;
          block_num < last_block_needed;
          block_num++, fill_index += BLOCK_SIZE, bytes_to_read -= BLOCK_SIZE) {
-        block_read(buf + fill_index, get_block_index_from_inode_index(inode, block_num), 1);
+        block_read(buf + fill_index, get_block_idx_from_inode_idx(inode, block_num), 1);
     }
 
     // Check if we are done
@@ -275,7 +277,7 @@ int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse
 
     // Not yet, last block has some data
     assert(bytes_to_read < BLOCK_SIZE);
-    block_read(temp, get_block_index_from_inode_index(inode, last_block_needed), 1);
+    block_read(temp, get_block_idx_from_inode_idx(inode, last_block_needed), 1);
     memcpy(buf + fill_index, temp, bytes_to_read);
 
     free(temp);
@@ -302,7 +304,7 @@ int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, bo
 int32_t find_dirent_idx_and_operate(fs_state *state, fs_inode *inode, bool valid, const char *name, bool clear_blocks) {
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
-        int32_t dirent_blk = get_block_index_from_inode_index(inode, i);
+        int32_t dirent_blk = get_block_idx_from_inode_idx(inode, i);
         block_read(dirents, dirent_blk, 1);
         for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
             if (dirents[j].valid == valid) {
@@ -372,7 +374,7 @@ int lab3_create_entry(fs_state *state, const char *path, mode_t mode) {
 
     // Load direntry
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
-    int32_t dirent_blk_idx = get_block_index_from_inode_index(parent_inode, free_dirent_idx / N_DIRENTS_IN_BLOCK);
+    int32_t dirent_blk_idx = get_block_idx_from_inode_idx(parent_inode, free_dirent_idx / N_DIRENTS_IN_BLOCK);
     block_read(dirents, dirent_blk_idx, 1);
 
     // Modify direntry
@@ -424,7 +426,7 @@ int lab3_rmdir(const char *path) {
     // Find direntry for the directory to be deleted and set it as invalid
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     int32_t dirent_idx = find_valid_dirent_idx_by_name(parent_inode, strrchr(path, '/') + 1);
-    int32_t dirent_blk_idx = get_block_index_from_inode_index(parent_inode, dirent_idx / N_DIRENTS_IN_BLOCK);
+    int32_t dirent_blk_idx = get_block_idx_from_inode_idx(parent_inode, dirent_idx / N_DIRENTS_IN_BLOCK);
     int32_t dirent_local_idx = dirent_idx % N_DIRENTS_IN_BLOCK;
     block_read(dirents, dirent_blk_idx, 1);
     dirents[dirent_local_idx].valid = 0;
