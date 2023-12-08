@@ -212,13 +212,14 @@ int32_t find_inode(fs_state *state, const char *path, bool ignore_last) {
 }
 
 // Returns valid 0-based index or -1 if not empty
-int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, bool set) {
+int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, int32_t max_blocks, bool set) {
     for (int32_t i = 0; i < length_in_blocks * BLOCK_SIZE; i++)
         if (bitmap[i] != 0xff)  // Has free inode
             for (int8_t j = 0; j < 8; j++) {
                 int32_t index = i * 8 + j;
                 if (bit_test(bitmap, index) == 0) {
                     assert(index < length_in_blocks * BLOCK_SIZE * 8);
+                    if (index >= max_blocks) return -1;
                     if (set) {
                         bit_set(bitmap, index);
                     }
@@ -226,6 +227,14 @@ int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, bo
                 }
             }
     return -1;
+}
+
+int32_t find_free_block_bitmap_idx(fs_state *state, bool set) {
+    return find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, state->super.disk_size, set);
+}
+
+int32_t find_free_inode_bitmap_idx(fs_state *state, bool set) {
+    return find_free_bitmap_idx(state->inode_bm, state->super.in_map_len, state->super.inodes_len, set);
 }
 
 int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
@@ -281,7 +290,7 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
 
         // Allocate new indir1
         if (last_block_have < N_DIRECT && last_block_needed >= N_DIRECT) {
-            int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+            int32_t block_idx = find_free_block_bitmap_idx(state, true);
             if (block_idx == -1) return -ENOSPC;
             inode->indir_1 = block_idx;
             dbg("============> Allocate new indir1\n");
@@ -289,7 +298,7 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
 
         // Allocate new indir2
         if (last_block_have < N_DIRECT + N_BLOCKS_IN_BLOCK && last_block_needed >= N_DIRECT + N_BLOCKS_IN_BLOCK) {
-            int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+            int32_t block_idx = find_free_block_bitmap_idx(state, true);
             if (block_idx == -1) return -ENOSPC;
             inode->indir_2 = block_idx;
             // Clear the pointers
@@ -305,7 +314,7 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
             int32_t ptrs[N_BLOCKS_IN_BLOCK] = {0};
             block_read(ptrs, inode->indir_2, 1);
             for (int32_t i = have_blocks_block; i < needed_blocks_block; i++) {
-                int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+                int32_t block_idx = find_free_block_bitmap_idx(state, true);
                 if (block_idx == -1) return -ENOSPC;
                 ptrs[i] = block_idx;
             }
@@ -314,7 +323,7 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
         }
 
         for (int32_t i = last_block_have + 1; i <= last_block_needed; i++) {
-            int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+            int32_t block_idx = find_free_block_bitmap_idx(state, true);
             if (block_idx == -1) return -ENOSPC;
             set_block_index_to_inode_index(inode, i, block_idx);
             dbg("new block: %d\n", block_idx);
@@ -411,7 +420,7 @@ int32_t find_free_dirent_idx(fs_state *state, fs_inode *inode) {
         free_dirent_idx = inode->size / BLOCK_SIZE;
         inode->size += BLOCK_SIZE;
         // Allocate and set a free block
-        int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+        int32_t block_idx = find_free_block_bitmap_idx(state, true);
         if (block_idx == -1) return -ENOSPC;
         set_block_index_to_inode_index(inode, free_dirent_idx, block_idx);
     }
@@ -458,8 +467,8 @@ int lab3_create_entry(fs_state *state, const char *path, mode_t mode) {
     if (!S_ISDIR(parent_inode->mode)) return -ENOTDIR;
 
     // Find empty inode in map
-    int32_t new_inode_idx = find_free_bitmap_idx(state->inode_bm, state->super.in_map_len, true);
-    assert(new_inode_idx != -1);
+    int32_t new_inode_idx = find_free_inode_bitmap_idx(state, true);
+    if (new_inode_idx == -1) return -ENOSPC;
 
     // Fill new inode
     fs_inode *new_inode = &state->inodes[new_inode_idx];
