@@ -476,7 +476,7 @@ int lab3_rename(const char *src_path, const char *dst_path, unsigned int flags) 
 
     if (strcmp(src_path, dst_path) == 0) return 0;
     // Check if in same path
-    char *s = src_path, *d = dst_path;
+    const char *s = src_path, *d = dst_path;
     while (*s && *d && (*s++ == *d++));
     // Parent path different, cannot rename
     if (s <= strrchr(src_path, '/') || d <= strrchr(dst_path, '/')) return -EINVAL;
@@ -531,7 +531,7 @@ int lab3_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
     if (idx < 0) return idx;
 
     fs_inode *inode = &state->inodes[idx];
-    inode->mode = inode->mode & __S_IFMT | mode;
+    inode->mode = (inode->mode & __S_IFMT) | mode;
     write_state(state);
     return 0;
 }
