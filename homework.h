@@ -17,8 +17,8 @@
 
 typedef struct fs_state {
     fs_super super;
-    char* block_bm;
-    char* inode_bm;
+    unsigned char* block_bm;
+    unsigned char* inode_bm;
     fs_inode* inodes;
 } fs_state;
 
