@@ -153,7 +153,7 @@ int32_t set_block_index_to_inode_index(fs_inode *inode, int32_t file_block_numbe
     }
 }
 
-fs_dirent find_next_dirent(fs_state *state, fs_inode *inode, char *name) {
+fs_dirent find_valid_dirent_by_name(fs_state *state, fs_inode *inode, char *name) {
     assert(S_ISDIR(inode->mode));
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
@@ -186,7 +186,7 @@ int32_t find_inode(fs_state *state, const char *path, bool ignore_last) {
         // Parse the inode's (dir?)entries and search for the current dir/file
         // Test for inode being a directory entry
         if (*path && !S_ISDIR(inode->mode)) return -ENOTDIR;
-        fs_dirent next = find_next_dirent(state, inode, token);
+        fs_dirent next = find_valid_dirent_by_name(state, inode, token);
         if (!next.valid) {
             if (ignore_last)
                 break;
@@ -299,6 +299,50 @@ int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, bo
     return -1;
 }
 
+int32_t find_dirent_idx_and_operate(fs_state *state, fs_inode *inode, bool valid, const char *name, bool clear_blocks) {
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    for (int32_t i = 0; i < inode->size / BLOCK_SIZE; i++) {
+        int32_t dirent_blk = get_block_index_from_inode_index(inode, i);
+        block_read(dirents, dirent_blk, 1);
+        for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+            if (dirents[j].valid == valid) {
+                if (name && strcmp(dirents[j].name, name) != 0) continue;
+                return i * N_DIRENTS_IN_BLOCK + j;
+            }
+        }
+        if (clear_blocks) {
+            assert(state);
+            bit_clear(state->block_bm, dirent_blk);
+        }
+    }
+    return -1;
+}
+
+int32_t find_free_dirent_idx(fs_state *state, fs_inode *inode) {
+    int32_t free_dirent_idx = find_dirent_idx_and_operate(NULL, inode, false, NULL, false);
+    // If we could not find any existing free direntry, add a new block
+    if (free_dirent_idx == -1) {
+        // Always multiple of BLOCK_SIZE
+        free_dirent_idx = inode->size / BLOCK_SIZE;
+        inode->size += BLOCK_SIZE;
+        // Allocate and set a free block
+        int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+        assert(block_idx != -1);
+        set_block_index_to_inode_index(inode, free_dirent_idx, block_idx);
+    }
+    return free_dirent_idx;
+}
+
+int32_t find_valid_dirent_idx_by_name(fs_inode *inode, char *name) {
+    return find_dirent_idx_and_operate(NULL, inode, true, name, false);
+}
+
+int32_t free_all_dirents(fs_state *state, fs_inode *inode) {
+    int32_t idx = find_dirent_idx_and_operate(state, inode, true, NULL, true);
+    if (idx != -1) return -ENOTEMPTY;
+    return 0;
+}
+
 int lab3_mkdir(const char *path, mode_t mode) {
     fs_state *state = fuse_get_context()->private_data;
     // Check if already exists
@@ -325,43 +369,22 @@ int lab3_mkdir(const char *path, mode_t mode) {
     new_inode->mode = mode | __S_IFDIR;
 
     // Add it to parent inode as direntry
-    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
-    int32_t free_dirents_block = -1, free_dirents_idx = -1;
-    for (int32_t i = 0; i < parent_inode->size / BLOCK_SIZE; i++) {
-        int32_t dirent_blk = get_block_index_from_inode_index(parent_inode, i);
-        block_read(dirents, dirent_blk, 1);
-        for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
-            if (!dirents[j].valid) {
-                dbg("Found dirent_blk with free direntry: %d\n", dirent_blk);
-                free_dirents_block = i;
-                free_dirents_idx = j;
-                goto exit_find_free_direntry;
-            }
-        }
-    }
-    exit_find_free_direntry:
-    // If we could not find any existing free direntry, add a new block
-    if (free_dirents_block == -1 || free_dirents_idx == -1) {
-        // Always multiple of BLOCK_SIZE
-        free_dirents_block = parent_inode->size / BLOCK_SIZE;
-        parent_inode->size += BLOCK_SIZE;
-        free_dirents_idx = 0;
-        memset(dirents, 0, BLOCK_SIZE);
-        // Allocate and set a free block
-        int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
-        assert(block_idx != -1);
-        set_block_index_to_inode_index(parent_inode, free_dirents_block, block_idx);
-    }
+    int32_t free_dirent_idx = find_free_dirent_idx(state, parent_inode);
 
-    assert(dirents[free_dirents_idx].valid == 0);
-    dirents[free_dirents_idx].valid = 1;
-    dirents[free_dirents_idx].inode = new_inode_idx;
-    strcpy(dirents[free_dirents_idx].name, strrchr(path, '/') + 1);
+    // Load direntry
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    int32_t dirent_blk_idx = get_block_index_from_inode_index(parent_inode, free_dirent_idx / N_DIRENTS_IN_BLOCK);
+    block_read(dirents, dirent_blk_idx, 1);
+
+    // Modify direntry
+    int32_t free_dirent_local_idx = free_dirent_idx % N_BLOCKS_IN_BLOCK;
+    assert(dirents[free_dirent_local_idx].valid == 0);
+    dirents[free_dirent_local_idx].valid = 1;
+    dirents[free_dirent_local_idx].inode = new_inode_idx;
+    strcpy(dirents[free_dirent_local_idx].name, strrchr(path, '/') + 1);
 
     // Write back direntry
-    int32_t dirent_blk = get_block_index_from_inode_index(parent_inode, free_dirents_block);
-    dbg("Writing to dirent_blk: %d\n", dirent_blk);
-    block_write(dirents, dirent_blk, 1);
+    block_write(dirents, dirent_blk_idx, 1);
 
     // Write back state
     write_state(state);
@@ -385,37 +408,22 @@ int lab3_rmdir(const char *path) {
     fs_inode *parent_inode = &state->inodes[parent_idx], *to_rm_inode = &state->inodes[to_rm_idx];
 
     // Check if directory is empty
-    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
-    for (int32_t i = 0; i < to_rm_inode->size / BLOCK_SIZE; i++) {
-        int32_t dirent_blk = get_block_index_from_inode_index(to_rm_inode, i);
-        assert(block_read(dirents, dirent_blk, 1) == 0);
-        for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
-            if (dirents[j].valid) {
-                return -ENOTEMPTY;
-            }
-        }
-        // Free the block
-        bit_clear(state->block_bm, dirent_blk);
-    }
+    int32_t err = free_all_dirents(state, to_rm_inode);
+    if (err) return err;
 
     // Free the inode
     bit_clear(state->inode_bm, to_rm_idx);
 
-    // Find direntry for the directory to be deleted
-    for (int32_t i = 0; i < parent_inode->size / BLOCK_SIZE; i++) {
-        int32_t dirent_blk = get_block_index_from_inode_index(parent_inode, i);
-        assert(block_read(dirents, dirent_blk, 1) == 0);
-        for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
-            if (dirents[j].valid && strcmp(dirents[j].name, strrchr(path, '/') + 1) == 0) {
-                dbg("Found dirent_blk with direntry to free: %d\n", dirent_blk);
-                dirents[j].valid = false;
-                // Write back
-                assert(block_write(dirents, dirent_blk, 1) == 0);
-                return 0;
-            }
-        }
-    }
-    assert(false);
+    // Find direntry for the directory to be deleted and set it as invalid
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    int32_t dirent_idx = find_valid_dirent_idx_by_name(parent_inode, strrchr(path, '/') + 1);
+    int32_t dirent_blk_idx = get_block_index_from_inode_index(parent_inode, dirent_idx / N_DIRENTS_IN_BLOCK);
+    int32_t dirent_local_idx = dirent_idx % N_DIRENTS_IN_BLOCK;
+    block_read(dirents, dirent_blk_idx, 1);
+    dirents[dirent_local_idx].valid = 0;
+    block_write(dirents, dirent_blk_idx, 1);
+
+    return 0;
 }
 
 /* for read-only version you need to implement:
