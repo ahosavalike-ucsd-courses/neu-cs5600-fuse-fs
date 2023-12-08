@@ -451,6 +451,8 @@ int lab3_remove_entry(fs_state *state, const char* path, bool isdir) {
     dirents[dirent_local_idx].valid = 0;
     block_write(dirents, dirent_blk_idx, 1);
 
+    // Write back state
+    write_state(state);
     return 0;
 }
 
@@ -516,6 +518,19 @@ int lab3_rename(const char *src_path, const char *dst_path, unsigned int flags) 
     return 0;
 }
 
+int lab3_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
+    fs_state *state = fuse_get_context()->private_data;
+
+    int32_t idx = find_inode(state, path, false);
+    assert(idx);
+    if (idx < 0) return idx;
+
+    fs_inode *inode = &state->inodes[idx];
+    inode->mode = inode->mode & __S_IFMT | mode;
+    write_state(state);
+    return 0;
+}
+
 /* for read-only version you need to implement:
  * - lab3_init
  * - lab3_getattr
@@ -548,7 +563,7 @@ struct fuse_operations fs_ops = {
     .unlink = lab3_unlink,
     .rmdir = lab3_rmdir,
     .rename = lab3_rename,
-    //    .chmod = lab3_chmod,
+    .chmod = lab3_chmod,
     //    .truncate = lab3_truncate,
     //    .write = lab3_write,
 };
