@@ -102,6 +102,7 @@ void *lab3_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
 
 void lab3_destroy(void *private_data) {
     fs_state *state = private_data;
+    // TODO: Flush state before cleanup?
     free(state->block_bm);
     free(state->inode_bm);
     free(state->inodes);
@@ -145,7 +146,7 @@ fs_dirent find_next_dirent(fs_state *state, fs_inode *inode, char *name) {
     return dirents[0];
 }
 
-int32_t find_inode(fs_state *state, const char *path) {
+int32_t find_inode(fs_state *state, const char *path, bool ignore_last) {
     // Root inode at index 1
     int32_t inode_idx = 1;
     fs_inode *inode = &state->inodes[inode_idx];
@@ -165,7 +166,12 @@ int32_t find_inode(fs_state *state, const char *path) {
         // Test for inode being a directory entry
         if (*path && !S_ISDIR(inode->mode)) return -ENOTDIR;
         fs_dirent next = find_next_dirent(state, inode, token);
-        if (!next.valid) return -ENOENT;
+        if (!next.valid) {
+            if (ignore_last)
+                break;
+            else
+                return -ENOENT;
+        }
         inode_idx = next.inode;
         // Inode number cannot be 0
         assert(inode_idx);
@@ -177,7 +183,7 @@ int32_t find_inode(fs_state *state, const char *path) {
 
 int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
     fs_state *state = fuse_get_context()->private_data;
-    int32_t inode_idx = find_inode(state, path);
+    int32_t inode_idx = find_inode(state, path, false);
     assert(inode_idx);
     if (inode_idx < 0) return inode_idx;
     fs_inode *inode = &state->inodes[inode_idx];
@@ -187,7 +193,7 @@ int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
 
 int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
     fs_state *state = fuse_get_context()->private_data;
-    int32_t inode_idx = find_inode(state, path);
+    int32_t inode_idx = find_inode(state, path, false);
     assert(inode_idx);
     if (inode_idx < 0) return inode_idx;
     fs_inode *inode = &state->inodes[inode_idx];
@@ -205,7 +211,7 @@ int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offs
 
 int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse_file_info *fi) {
     fs_state *state = fuse_get_context()->private_data;
-    int32_t inode_idx = find_inode(state, path);
+    int32_t inode_idx = find_inode(state, path, false);
     assert(inode_idx);
     if (inode_idx < 0) return inode_idx;
     fs_inode *inode = &state->inodes[inode_idx];
