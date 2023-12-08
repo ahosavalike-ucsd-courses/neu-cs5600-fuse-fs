@@ -462,6 +462,60 @@ int lab3_unlink(const char *path) {
     return lab3_remove_entry(fuse_get_context()->private_data, path, false);
 }
 
+int lab3_rename(const char *src_path, const char *dst_path, unsigned int flags) {
+    fs_state *state = fuse_get_context()->private_data;
+
+    dbg("Renaming %s to %s\n", src_path, dst_path);
+
+    if (strcmp(src_path, dst_path) == 0) return 0;
+    // Check if in same path
+    char *s = src_path, *d = dst_path;
+    while (*s && *d && (*s++ == *d++));
+    // Parent path different, cannot rename
+    if (s <= strrchr(src_path, '/') || d <= strrchr(dst_path, '/')) return -EINVAL;
+
+    // Delete destination if it exists
+    int32_t dst_idx = find_inode(state, dst_path, false);
+    assert(dst_idx);
+    if (dst_idx > 0) {
+        fs_inode *dst = &state->inodes[dst_idx];
+        int32_t err = lab3_remove_entry(state, dst_path, S_ISDIR(dst->mode));
+        // Destination is a non empty directory
+        if (err < 0) return err;
+    }
+
+    // Make sure source exists
+    int32_t src_idx = find_inode(state, src_path, false);
+    assert(src_idx);
+    if (src_idx < 0) return src_idx;
+
+    char *src_file_name = strrchr(src_path, '/') + 1;
+    assert(strlen(src_file_name) < 28);
+    char *dst_file_name = strrchr(dst_path, '/') + 1;
+    if (strlen(dst_file_name) >= 28) return -EINVAL;
+
+    // Find parent inode
+    char *ppath = calloc(strlen(src_path), 1);
+    memcpy(ppath, src_path, src_file_name - src_path);
+    int32_t parent_idx = find_inode(state, ppath, false);
+    free(ppath);
+    assert(parent_idx);
+    if (parent_idx < 0) return parent_idx;
+    fs_inode *parent_inode = &state->inodes[parent_idx];
+
+    // Find source's direntry
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    int32_t dirent_idx = find_valid_dirent_idx_by_name(parent_inode, src_file_name);
+    int32_t dirent_blk_idx = get_block_idx_from_inode_idx(parent_inode, dirent_idx / N_DIRENTS_IN_BLOCK);
+    int32_t dirent_local_idx = dirent_idx % N_DIRENTS_IN_BLOCK;
+    block_read(dirents, dirent_blk_idx, 1);
+
+    // Rename and write back
+    strcpy(dirents[dirent_local_idx].name, dst_file_name);
+    block_write(dirents, dirent_blk_idx, 1);
+    return 0;
+}
+
 /* for read-only version you need to implement:
  * - lab3_init
  * - lab3_getattr
@@ -493,7 +547,7 @@ struct fuse_operations fs_ops = {
     .mkdir = lab3_mkdir,
     .unlink = lab3_unlink,
     .rmdir = lab3_rmdir,
-    //    .rename = lab3_rename,
+    .rename = lab3_rename,
     //    .chmod = lab3_chmod,
     //    .truncate = lab3_truncate,
     //    .write = lab3_write,
