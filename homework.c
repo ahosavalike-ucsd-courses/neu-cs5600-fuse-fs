@@ -84,9 +84,7 @@ void read_state(fs_state *state) {
 }
 
 void write_state(fs_state *state) {
-    int block = 0;
-    block_write(&state->super, block, 1);
-    block++;
+    int block = 1;
     block_write(state->block_bm, block, state->super.blk_map_len);
     block += state->super.blk_map_len;
     block_write(state->inode_bm, block, state->super.in_map_len);
