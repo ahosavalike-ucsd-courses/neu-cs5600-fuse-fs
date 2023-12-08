@@ -209,6 +209,23 @@ int32_t find_inode(fs_state *state, const char *path, bool ignore_last) {
     return inode_idx;
 }
 
+// Returns valid 0-based index or -1 if not empty
+int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, bool set) {
+    for (int32_t i = 0; i < length_in_blocks * BLOCK_SIZE; i++)
+        if (bitmap[i] != 0xff)  // Has free inode
+            for (int8_t j = 0; j < 8; j++) {
+                int32_t index = i * 8 + j;
+                if (bit_test(bitmap, index) == 0) {
+                    assert(index < length_in_blocks * BLOCK_SIZE * 8);
+                    if (set) {
+                        bit_set(bitmap, index);
+                    }
+                    return index;
+                }
+            }
+    return -1;
+}
+
 int lab3_getattr(const char *path, struct stat *sb, struct fuse_file_info *fi) {
     fs_state *state = fuse_get_context()->private_data;
     int32_t inode_idx = find_inode(state, path, false);
@@ -237,73 +254,132 @@ int lab3_readdir(const char *path, void *ptr, fuse_fill_dir_t filler, off_t offs
     return 0;
 }
 
-int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse_file_info *fi) {
-    fs_state *state = fuse_get_context()->private_data;
+int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, off_t offset, bool write) {
     int32_t inode_idx = find_inode(state, path, false);
     assert(inode_idx);
     if (inode_idx < 0) return inode_idx;
     fs_inode *inode = &state->inodes[inode_idx];
     if (!S_ISREG(inode->mode)) return S_ISDIR(inode->mode) ? -EISDIR : -EINVAL;
 
+    if (offset > inode->size) return -EINVAL;
+
     int32_t block_offset = offset / BLOCK_SIZE;
-    int32_t bytes_to_read = min(len, inode->size - offset);
+    int32_t bytes_to_rw = write ? len : min(len, inode->size - offset);
     int32_t fill_index = 0;
 
     // First block
-    int32_t bytes_to_copy_first_block = min(bytes_to_read, BLOCK_SIZE - (offset % BLOCK_SIZE));
-    bytes_to_read -= bytes_to_copy_first_block;
+    int32_t bytes_to_copy_first_block = min(bytes_to_rw, BLOCK_SIZE - (offset % BLOCK_SIZE));
+    bytes_to_rw -= bytes_to_copy_first_block;
+    int32_t last_block_needed = div_round_up(offset + bytes_to_rw, BLOCK_SIZE);
+
+    if (write) {
+        // Allocate needed extra blocks and increase size
+        int32_t last_block_have = div_round_up(inode->size, BLOCK_SIZE) - 1;
+        inode->size = max(inode->size, offset + len);
+
+        // Allocate new indir1
+        if (last_block_have < N_DIRECT && last_block_needed >= N_DIRECT) {
+            int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+            assert(block_idx != -1);
+            inode->indir_1 = block_idx;
+            dbg("============> Allocate new indir1\n");
+        }
+
+        // Allocate new indir2
+        if (last_block_have < N_DIRECT + N_BLOCKS_IN_BLOCK && last_block_needed >= N_DIRECT + N_BLOCKS_IN_BLOCK) {
+            int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+            assert(block_idx != -1);
+            inode->indir_2 = block_idx;
+            // Clear the pointers
+            int32_t ptrs[N_BLOCKS_IN_BLOCK] = {0};
+            block_write(ptrs, get_block_idx_from_inode_idx(inode, inode->indir_2), 1);
+            dbg("============> Allocate new indir2\n");
+        }
+
+        // Allocate new indir2 ptrs
+        int32_t needed_blocks_block = div_round_up((last_block_needed - N_DIRECT - N_BLOCKS_IN_BLOCK), N_BLOCKS_IN_BLOCK);
+        int32_t have_blocks_block = max(div_round_up((last_block_have - N_DIRECT - N_BLOCKS_IN_BLOCK), N_BLOCKS_IN_BLOCK), 0);
+        if (have_blocks_block < needed_blocks_block) {
+            int32_t ptrs[N_BLOCKS_IN_BLOCK] = {0};
+            block_read(ptrs, get_block_idx_from_inode_idx(inode, inode->indir_2), 1);
+            for (int32_t i = have_blocks_block; i < needed_blocks_block; i++) {
+                int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+                assert(block_idx != -1);
+                ptrs[i] = block_idx;
+            }
+            dbg("============> Allocate %d new indir2 ptrs\n", needed_blocks_block - have_blocks_block);
+            block_write(ptrs, get_block_idx_from_inode_idx(inode, inode->indir_2), 1);
+        }
+
+        for (int32_t i = last_block_have + 1; i <= last_block_needed; i++) {
+            int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
+            assert(block_idx != -1);
+            set_block_index_to_inode_index(inode, i, block_idx);
+            dbg("new block: %d\n", block_idx);
+        }
+        dbg("============> Allocate %d new data blocks\n", last_block_needed - last_block_have);
+
+        write_state(state);
+    }
 
     char *temp = calloc(BLOCK_SIZE, sizeof(char));
     block_read(temp, get_block_idx_from_inode_idx(inode, block_offset), 1);
-    memcpy(buf + fill_index, temp + (offset % BLOCK_SIZE), bytes_to_copy_first_block);
+    if (write) {
+        memcpy(temp + (offset % BLOCK_SIZE), buf + fill_index, bytes_to_copy_first_block);
+        block_write(temp, get_block_idx_from_inode_idx(inode, block_offset), 1);
+    } else {
+        memcpy(buf + fill_index, temp + (offset % BLOCK_SIZE), bytes_to_copy_first_block);
+    }
+    
     fill_index += bytes_to_copy_first_block;
 
     // Check if we are done
-    assert(bytes_to_read >= 0);
-    if (bytes_to_read == 0) {
+    assert(bytes_to_rw >= 0);
+    if (bytes_to_rw == 0) {
         free(temp);
         return min(len, inode->size - offset);
     }
 
     // Not yet, iterate through whole blocks
-    int32_t last_block_needed = block_offset + div_round_up(bytes_to_read, BLOCK_SIZE);
+
     for (int32_t block_num = block_offset + 1;
          block_num < last_block_needed;
-         block_num++, fill_index += BLOCK_SIZE, bytes_to_read -= BLOCK_SIZE) {
-        block_read(buf + fill_index, get_block_idx_from_inode_idx(inode, block_num), 1);
+         block_num++, fill_index += BLOCK_SIZE, bytes_to_rw -= BLOCK_SIZE) {
+        if (write) {
+            block_write(buf + fill_index, get_block_idx_from_inode_idx(inode, block_num), 1);
+        } else {
+            block_read(buf + fill_index, get_block_idx_from_inode_idx(inode, block_num), 1);
+        }
     }
 
     // Check if we are done
-    assert(bytes_to_read >= 0);
-    if (bytes_to_read == 0) {
+    assert(bytes_to_rw >= 0);
+    if (bytes_to_rw == 0) {
         free(temp);
         return min(len, inode->size - offset);
     }
 
     // Not yet, last block has some data
-    assert(bytes_to_read < BLOCK_SIZE);
-    block_read(temp, get_block_idx_from_inode_idx(inode, last_block_needed), 1);
-    memcpy(buf + fill_index, temp, bytes_to_read);
+    assert(bytes_to_rw < BLOCK_SIZE);
+    if (write) {
+        memcpy(temp, buf + fill_index, bytes_to_rw);
+        block_write(temp, get_block_idx_from_inode_idx(inode, last_block_needed), 1);
+    } else {
+        block_read(temp, get_block_idx_from_inode_idx(inode, last_block_needed), 1);
+        memcpy(buf + fill_index, temp, bytes_to_rw);
+    }
+    
 
     free(temp);
     return min(len, inode->size - offset);
 }
 
-// Returns valid 0-based index or -1 if not empty
-int32_t find_free_bitmap_idx(unsigned char *bitmap, int32_t length_in_blocks, bool set) {
-    for (int32_t i = 0; i < length_in_blocks * BLOCK_SIZE; i++)
-        if (bitmap[i] != 0xff)  // Has free inode
-            for (int8_t j = 0; j < 8; j++) {
-                int32_t index = i * 8 + j;
-                if (bit_test(bitmap, index) == 0) {
-                    assert(index < length_in_blocks * BLOCK_SIZE * 8);
-                    if (set) {
-                        bit_set(bitmap, index);
-                    }
-                    return index;
-                }
-            }
-    return -1;
+int lab3_read(const char *path, char *buf, size_t len, off_t offset, struct fuse_file_info *fi) {
+    return lab3_read_write(fuse_get_context()->private_data, path, buf, len, offset, false);
+}
+
+int lab3_write (const char *path, const char *buf, size_t len, off_t offset, struct fuse_file_info *fi) {
+    return lab3_read_write(fuse_get_context()->private_data, path, (char*) buf, len, offset, true);
 }
 
 int32_t find_dirent_idx_and_operate(fs_state *state, fs_inode *inode, bool valid, const char *name, bool clear_blocks) {
@@ -590,5 +666,5 @@ struct fuse_operations fs_ops = {
     .rename = lab3_rename,
     .chmod = lab3_chmod,
     .truncate = lab3_truncate,
-    //    .write = lab3_write,
+    .write = lab3_write,
 };
