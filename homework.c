@@ -343,8 +343,7 @@ int32_t free_all_dirents(fs_state *state, fs_inode *inode) {
     return 0;
 }
 
-int lab3_mkdir(const char *path, mode_t mode) {
-    fs_state *state = fuse_get_context()->private_data;
+int lab3_create_entry(fs_state *state, const char *path, mode_t mode) {
     // Check if already exists
     int32_t exact_inode_idx = find_inode(state, path, false);
     assert(exact_inode_idx);
@@ -366,9 +365,9 @@ int lab3_mkdir(const char *path, mode_t mode) {
     memset(new_inode, 0, sizeof(fs_inode));
 
     new_inode->mtime = (unsigned)time(NULL);
-    new_inode->mode = mode | __S_IFDIR;
+    new_inode->mode = mode;
 
-    // Add it to parent inode as direntry
+    // Add it to parent inode
     int32_t free_dirent_idx = find_free_dirent_idx(state, parent_inode);
 
     // Load direntry
@@ -389,6 +388,14 @@ int lab3_mkdir(const char *path, mode_t mode) {
     // Write back state
     write_state(state);
     return 0;
+}
+
+int lab3_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+    return lab3_create_entry(fuse_get_context()->private_data, path, mode | __S_IFREG);
+}
+
+int lab3_mkdir(const char *path, mode_t mode) {
+    return lab3_create_entry(fuse_get_context()->private_data, path, mode | __S_IFDIR);
 }
 
 int lab3_rmdir(const char *path) {
@@ -453,7 +460,7 @@ struct fuse_operations fs_ops = {
     .readdir = lab3_readdir,
     .read = lab3_read,
 
-    //    .create = lab3_create,
+    .create = lab3_create,
     .mkdir = lab3_mkdir,
     //    .unlink = lab3_unlink,
     .rmdir = lab3_rmdir,
