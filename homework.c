@@ -136,13 +136,16 @@ int32_t set_block_index_to_inode_index(fs_inode *inode, int32_t file_block_numbe
     uint32_t size = div_round_up(inode->size, BLOCK_SIZE);
     assert(file_block_number < size);
     if (file_block_number < N_DIRECT) {
-        return inode->ptrs[file_block_number] = block_idx;
+        inode->ptrs[file_block_number] = block_idx;
+        return block_idx;
     } else if (file_block_number < (N_DIRECT + N_BLOCKS_IN_BLOCK)) {
         file_block_number -= N_DIRECT;
         assert(inode->indir_1);
         int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
         assert(block_read(block_nums, inode->indir_1, 1) == 0);
-        return block_nums[file_block_number - N_DIRECT] = block_idx;
+        block_nums[file_block_number] = block_idx;
+        assert(block_write(block_nums, inode->indir_1, 1) == 0);
+        return block_idx;
     } else {
         file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
         assert(inode->indir_2);
@@ -151,7 +154,9 @@ int32_t set_block_index_to_inode_index(fs_inode *inode, int32_t file_block_numbe
         assert(block_read(block_nums, inode->indir_2, 1) == 0);
         int32_t block_num_id = block_nums[file_block_number / (N_BLOCKS_IN_BLOCK)];
         assert(block_read(block_nums, block_num_id, 1) == 0);
-        return block_nums[file_block_number % (N_BLOCKS_IN_BLOCK)] = block_idx;
+        block_nums[file_block_number % (N_BLOCKS_IN_BLOCK)] = block_idx;
+        assert(block_write(block_nums, block_num_id, 1) == 0);
+        return block_idx;
     }
 }
 
