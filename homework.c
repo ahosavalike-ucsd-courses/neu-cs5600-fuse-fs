@@ -368,6 +368,56 @@ int lab3_mkdir(const char *path, mode_t mode) {
     return 0;
 }
 
+int lab3_rmdir(const char *path) {
+    fs_state *state = fuse_get_context()->private_data;
+
+    int32_t to_rm_idx = find_inode(state, path, false);
+    assert(to_rm_idx);
+    if (to_rm_idx <= 0) return to_rm_idx;
+
+    // Find parent inode
+    char *ppath = calloc(strlen(path), 1);
+    memcpy(ppath, path, strrchr(path, '/') - path + 1);
+    int32_t parent_idx = find_inode(state, ppath, false);
+    free(ppath);
+    assert(parent_idx > 0);
+
+    fs_inode *parent_inode = &state->inodes[parent_idx], *to_rm_inode = &state->inodes[to_rm_idx];
+
+    // Check if directory is empty
+    fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
+    for (int32_t i = 0; i < to_rm_inode->size / BLOCK_SIZE; i++) {
+        int32_t dirent_blk = get_block_index_from_inode_index(to_rm_inode, i);
+        assert(block_read(dirents, dirent_blk, 1) == 0);
+        for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+            if (dirents[j].valid) {
+                return -ENOTEMPTY;
+            }
+        }
+        // Free the block
+        bit_clear(state->block_bm, dirent_blk);
+    }
+
+    // Free the inode
+    bit_clear(state->inode_bm, to_rm_idx);
+
+    // Find direntry for the directory to be deleted
+    for (int32_t i = 0; i < parent_inode->size / BLOCK_SIZE; i++) {
+        int32_t dirent_blk = get_block_index_from_inode_index(parent_inode, i);
+        assert(block_read(dirents, dirent_blk, 1) == 0);
+        for (int32_t j = 0; j < N_DIRENTS_IN_BLOCK; j++) {
+            if (dirents[j].valid && strcmp(dirents[j].name, strrchr(path, '/') + 1) == 0) {
+                dbg("Found dirent_blk with direntry to free: %d\n", dirent_blk);
+                dirents[j].valid = false;
+                // Write back
+                assert(block_write(dirents, dirent_blk, 1) == 0);
+                return 0;
+            }
+        }
+    }
+    assert(false);
+}
+
 /* for read-only version you need to implement:
  * - lab3_init
  * - lab3_getattr
@@ -398,7 +448,7 @@ struct fuse_operations fs_ops = {
     //    .create = lab3_create,
     .mkdir = lab3_mkdir,
     //    .unlink = lab3_unlink,
-    //    .rmdir = lab3_rmdir,
+    .rmdir = lab3_rmdir,
     //    .rename = lab3_rename,
     //    .chmod = lab3_chmod,
     //    .truncate = lab3_truncate,
