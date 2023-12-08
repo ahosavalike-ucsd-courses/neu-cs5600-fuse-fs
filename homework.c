@@ -531,6 +531,26 @@ int lab3_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
     return 0;
 }
 
+int lab3_truncate(const char *path, off_t new_len, struct fuse_file_info *fi) {
+    fs_state *state = fuse_get_context()->private_data;
+
+    if(new_len != 0) return -EINVAL;
+
+    int32_t to_truncate_idx = find_inode(state, path, false);
+    assert(to_truncate_idx);
+    if (to_truncate_idx <= 0) return to_truncate_idx;
+
+    fs_inode *to_truncate_inode = &state->inodes[to_truncate_idx];
+    free_all_blocks(state, to_truncate_inode);
+    to_truncate_inode->size = 0;
+    memset(to_truncate_inode->ptrs, 0, N_DIRECT * sizeof(int32_t));
+    to_truncate_inode->indir_1 = to_truncate_inode->indir_2 = 0;
+
+    // Write back
+    write_state(state);
+    return 0;
+}
+
 /* for read-only version you need to implement:
  * - lab3_init
  * - lab3_getattr
@@ -564,6 +584,6 @@ struct fuse_operations fs_ops = {
     .rmdir = lab3_rmdir,
     .rename = lab3_rename,
     .chmod = lab3_chmod,
-    //    .truncate = lab3_truncate,
+    .truncate = lab3_truncate,
     //    .write = lab3_write,
 };
