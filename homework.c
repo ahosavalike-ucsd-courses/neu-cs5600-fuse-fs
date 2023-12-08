@@ -345,6 +345,22 @@ int32_t free_all_dirents(fs_state *state, fs_inode *inode) {
     return 0;
 }
 
+void free_all_blocks(fs_state *state, fs_inode *inode) {
+    int32_t blocks = div_round_up(inode->size, BLOCK_SIZE);
+    for (int32_t i = 0; i < blocks; i++) {
+        int32_t block_idx = get_block_idx_from_inode_idx(inode, i);
+        bit_clear(state->block_bm, block_idx);
+    }
+    if (blocks > N_DIRECT) bit_clear(state->block_bm, inode->indir_1);
+    if (blocks > N_DIRECT + N_BLOCKS_IN_BLOCK) {
+        int32_t ptrs[N_BLOCKS_IN_BLOCK];
+        block_read(ptrs, inode->indir_2, 1);
+        for (int32_t i = 0; i < blocks - N_DIRECT - N_BLOCKS_IN_BLOCK; i++)
+            bit_clear(state->block_bm, ptrs[i]);
+        bit_clear(state->block_bm, inode->indir_2);
+    }
+}
+
 int lab3_create_entry(fs_state *state, const char *path, mode_t mode) {
     // Check if already exists
     int32_t exact_inode_idx = find_inode(state, path, false);
@@ -400,9 +416,7 @@ int lab3_mkdir(const char *path, mode_t mode) {
     return lab3_create_entry(fuse_get_context()->private_data, path, mode | __S_IFDIR);
 }
 
-int lab3_rmdir(const char *path) {
-    fs_state *state = fuse_get_context()->private_data;
-
+int lab3_remove_entry(fs_state *state, const char* path, bool isdir) {
     int32_t to_rm_idx = find_inode(state, path, false);
     assert(to_rm_idx);
     if (to_rm_idx <= 0) return to_rm_idx;
@@ -416,14 +430,19 @@ int lab3_rmdir(const char *path) {
 
     fs_inode *parent_inode = &state->inodes[parent_idx], *to_rm_inode = &state->inodes[to_rm_idx];
 
-    // Check if directory is empty
-    int32_t err = free_all_dirents(state, to_rm_inode);
-    if (err) return err;
+    if (isdir) {
+        // Check if directory is empty
+        int32_t err = free_all_dirents(state, to_rm_inode);
+        if (err) return err;
+    } else {
+        // Free all blocks
+        free_all_blocks(state, to_rm_inode);
+    }
 
     // Free the inode
     bit_clear(state->inode_bm, to_rm_idx);
 
-    // Find direntry for the directory to be deleted and set it as invalid
+    // Find direntry for the entry to be deleted and set it as invalid
     fs_dirent dirents[N_DIRENTS_IN_BLOCK] = {0};
     int32_t dirent_idx = find_valid_dirent_idx_by_name(parent_inode, strrchr(path, '/') + 1);
     int32_t dirent_blk_idx = get_block_idx_from_inode_idx(parent_inode, dirent_idx / N_DIRENTS_IN_BLOCK);
@@ -433,6 +452,14 @@ int lab3_rmdir(const char *path) {
     block_write(dirents, dirent_blk_idx, 1);
 
     return 0;
+}
+
+int lab3_rmdir(const char *path) {
+    return lab3_remove_entry(fuse_get_context()->private_data, path, true);
+}
+
+int lab3_unlink(const char *path) {
+    return lab3_remove_entry(fuse_get_context()->private_data, path, false);
 }
 
 /* for read-only version you need to implement:
@@ -464,7 +491,7 @@ struct fuse_operations fs_ops = {
 
     .create = lab3_create,
     .mkdir = lab3_mkdir,
-    //    .unlink = lab3_unlink,
+    .unlink = lab3_unlink,
     .rmdir = lab3_rmdir,
     //    .rename = lab3_rename,
     //    .chmod = lab3_chmod,
