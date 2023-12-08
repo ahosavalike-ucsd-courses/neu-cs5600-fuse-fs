@@ -122,14 +122,14 @@ int32_t get_block_idx_from_inode_idx(fs_inode *inode, int32_t file_block_number)
         return block_ptrs[file_block_number];
     }
 
-    file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
+    file_block_number -= N_BLOCKS_IN_BLOCK;
     assert(inode->indir_2);
     int32_t block_ptrs[N_BLOCKS_IN_BLOCK] = {0};
 
     assert(block_read(block_ptrs, inode->indir_2, 1) == 0);
-    int32_t block_num_id = block_ptrs[file_block_number / (N_BLOCKS_IN_BLOCK)];
+    int32_t block_num_id = block_ptrs[file_block_number / N_BLOCKS_IN_BLOCK];
     assert(block_read(block_ptrs, block_num_id, 1) == 0);
-    return block_ptrs[file_block_number % (N_BLOCKS_IN_BLOCK)];
+    return block_ptrs[file_block_number % N_BLOCKS_IN_BLOCK];
 }
 
 int32_t set_block_index_to_inode_index(fs_inode *inode, int32_t file_block_number, int32_t block_idx) {
@@ -138,26 +138,28 @@ int32_t set_block_index_to_inode_index(fs_inode *inode, int32_t file_block_numbe
     if (file_block_number < N_DIRECT) {
         inode->ptrs[file_block_number] = block_idx;
         return block_idx;
-    } else if (file_block_number < (N_DIRECT + N_BLOCKS_IN_BLOCK)) {
-        file_block_number -= N_DIRECT;
-        assert(inode->indir_1);
-        int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
-        assert(block_read(block_nums, inode->indir_1, 1) == 0);
-        block_nums[file_block_number] = block_idx;
-        assert(block_write(block_nums, inode->indir_1, 1) == 0);
-        return block_idx;
-    } else {
-        file_block_number -= N_DIRECT + N_BLOCKS_IN_BLOCK;
-        assert(inode->indir_2);
-        int32_t block_nums[N_BLOCKS_IN_BLOCK] = {0};
+    }
 
-        assert(block_read(block_nums, inode->indir_2, 1) == 0);
-        int32_t block_num_id = block_nums[file_block_number / (N_BLOCKS_IN_BLOCK)];
-        assert(block_read(block_nums, block_num_id, 1) == 0);
-        block_nums[file_block_number % (N_BLOCKS_IN_BLOCK)] = block_idx;
-        assert(block_write(block_nums, block_num_id, 1) == 0);
+    file_block_number -= N_DIRECT;
+    if (file_block_number < N_BLOCKS_IN_BLOCK) {
+        assert(inode->indir_1);
+        int32_t block_ptrs[N_BLOCKS_IN_BLOCK] = {0};
+        assert(block_read(block_ptrs, inode->indir_1, 1) == 0);
+        block_ptrs[file_block_number] = block_idx;
+        assert(block_write(block_ptrs, inode->indir_1, 1) == 0);
         return block_idx;
     }
+
+    file_block_number -= N_BLOCKS_IN_BLOCK;
+    assert(inode->indir_2);
+    int32_t block_ptrs[N_BLOCKS_IN_BLOCK] = {0};
+
+    assert(block_read(block_ptrs, inode->indir_2, 1) == 0);
+    int32_t block_num_id = block_ptrs[file_block_number / N_BLOCKS_IN_BLOCK];
+    assert(block_read(block_ptrs, block_num_id, 1) == 0);
+    block_ptrs[file_block_number % N_BLOCKS_IN_BLOCK] = block_idx;
+    assert(block_write(block_ptrs, block_num_id, 1) == 0);
+    return block_idx;
 }
 
 fs_dirent find_valid_dirent_by_name(fs_state *state, fs_inode *inode, char *name) {
@@ -280,7 +282,7 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
         // Allocate new indir1
         if (last_block_have < N_DIRECT && last_block_needed >= N_DIRECT) {
             int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
-            assert(block_idx != -1);
+            if (block_idx == -1) return -ENOSPC;
             inode->indir_1 = block_idx;
             dbg("============> Allocate new indir1\n");
         }
@@ -288,11 +290,11 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
         // Allocate new indir2
         if (last_block_have < N_DIRECT + N_BLOCKS_IN_BLOCK && last_block_needed >= N_DIRECT + N_BLOCKS_IN_BLOCK) {
             int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
-            assert(block_idx != -1);
+            if (block_idx == -1) return -ENOSPC;
             inode->indir_2 = block_idx;
             // Clear the pointers
             int32_t ptrs[N_BLOCKS_IN_BLOCK] = {0};
-            block_write(ptrs, get_block_idx_from_inode_idx(inode, inode->indir_2), 1);
+            block_write(ptrs, inode->indir_2, 1);
             dbg("============> Allocate new indir2\n");
         }
 
@@ -301,19 +303,19 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
         int32_t have_blocks_block = max(div_round_up((last_block_have - N_DIRECT - N_BLOCKS_IN_BLOCK), N_BLOCKS_IN_BLOCK), 0);
         if (have_blocks_block < needed_blocks_block) {
             int32_t ptrs[N_BLOCKS_IN_BLOCK] = {0};
-            block_read(ptrs, get_block_idx_from_inode_idx(inode, inode->indir_2), 1);
+            block_read(ptrs, inode->indir_2, 1);
             for (int32_t i = have_blocks_block; i < needed_blocks_block; i++) {
                 int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
-                assert(block_idx != -1);
+                if (block_idx == -1) return -ENOSPC;
                 ptrs[i] = block_idx;
             }
             dbg("============> Allocate %d new indir2 ptrs\n", needed_blocks_block - have_blocks_block);
-            block_write(ptrs, get_block_idx_from_inode_idx(inode, inode->indir_2), 1);
+            block_write(ptrs, inode->indir_2, 1);
         }
 
         for (int32_t i = last_block_have + 1; i <= last_block_needed; i++) {
             int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
-            assert(block_idx != -1);
+            if (block_idx == -1) return -ENOSPC;
             set_block_index_to_inode_index(inode, i, block_idx);
             dbg("new block: %d\n", block_idx);
         }
@@ -343,7 +345,7 @@ int lab3_read_write(fs_state *state, const char *path, char *buf, size_t len, of
     // Not yet, iterate through whole blocks
 
     for (int32_t block_num = block_offset + 1;
-         block_num < last_block_needed;
+         block_num <= last_block_needed && bytes_to_rw >= BLOCK_SIZE;
          block_num++, fill_index += BLOCK_SIZE, bytes_to_rw -= BLOCK_SIZE) {
         if (write) {
             block_write(buf + fill_index, get_block_idx_from_inode_idx(inode, block_num), 1);
@@ -410,7 +412,7 @@ int32_t find_free_dirent_idx(fs_state *state, fs_inode *inode) {
         inode->size += BLOCK_SIZE;
         // Allocate and set a free block
         int32_t block_idx = find_free_bitmap_idx(state->block_bm, state->super.blk_map_len, true);
-        assert(block_idx != -1);
+        if (block_idx == -1) return -ENOSPC;
         set_block_index_to_inode_index(inode, free_dirent_idx, block_idx);
     }
     return free_dirent_idx;
